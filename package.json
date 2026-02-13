@@ -16,7 +16,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/openclaw/agentkit-mesh"
+    "url": "https://github.com/agentkitai/agentkit-mesh"
   },
   "scripts": {
     "test": "vitest run",
