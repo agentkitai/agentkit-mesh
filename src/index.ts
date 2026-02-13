@@ -16,7 +16,7 @@ const scriptPath = process.argv[1] ?? '';
 const isDirectRun =
   scriptPath.endsWith('/agentkit-mesh') ||
   scriptPath.endsWith('\\agentkit-mesh') ||
-  (scriptPath.endsWith('/index.js') && scriptPath.includes('agentkit-mesh'));
+  scriptPath.endsWith('/index.js');
 if (isDirectRun) {
   const command = process.argv[2];
 
