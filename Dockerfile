@@ -1,4 +1,5 @@
-FROM node:22 AS build
+FROM node:22-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ curl && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
@@ -8,13 +9,11 @@ COPY src/ src/
 RUN pnpm run build
 
 FROM node:22-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl python3 make g++ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/package.json /app/pnpm-lock.yaml ./
-RUN corepack enable && corepack prepare pnpm@latest --activate && \
-    pnpm install --frozen-lockfile --prod && \
-    apt-get purge -y python3 make g++ && apt-get autoremove -y
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./
 RUN mkdir -p /app/data
 EXPOSE 8766
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD curl -f http://localhost:8766/health || exit 1
