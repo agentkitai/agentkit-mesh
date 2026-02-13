@@ -21,6 +21,18 @@ export interface RegisterInput {
   protocol?: string;
 }
 
+export interface DelegationRecord {
+  id: string;
+  source_agent: string;
+  target_agent: string;
+  task: string;
+  status: string;
+  result: string | null;
+  error: string | null;
+  latency_ms: number | null;
+  created_at: string;
+}
+
 export class AgentRegistry {
   private db: Database.Database;
 
@@ -45,6 +57,19 @@ export class AgentRegistry {
         protocol TEXT NOT NULL DEFAULT 'mcp',
         registered_at TEXT NOT NULL,
         last_seen TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS delegations (
+        id TEXT PRIMARY KEY,
+        source_agent TEXT NOT NULL,
+        target_agent TEXT NOT NULL,
+        task TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result TEXT,
+        error TEXT,
+        latency_ms INTEGER,
+        created_at TEXT NOT NULL
       )
     `);
   }
@@ -94,6 +119,25 @@ export class AgentRegistry {
     const now = new Date().toISOString();
     const result = this.db.prepare('UPDATE agents SET last_seen = ? WHERE name = ?').run(now, name);
     return result.changes > 0;
+  }
+
+  logDelegation(record: Omit<DelegationRecord, 'created_at'> & { created_at?: string }): DelegationRecord {
+    const created_at = record.created_at ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO delegations (id, source_agent, target_agent, task, status, result, error, latency_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(record.id, record.source_agent, record.target_agent, record.task, record.status,
+           record.result ?? null, record.error ?? null, record.latency_ms ?? null, created_at);
+    return { ...record, created_at } as DelegationRecord;
+  }
+
+  listDelegations(limit = 50, offset = 0): DelegationRecord[] {
+    return this.db.prepare('SELECT * FROM delegations ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as DelegationRecord[];
+  }
+
+  getDelegation(id: string): DelegationRecord | null {
+    return (this.db.prepare('SELECT * FROM delegations WHERE id = ?').get(id) as DelegationRecord) ?? null;
   }
 
   close(): void {
