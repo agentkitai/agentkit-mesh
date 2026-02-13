@@ -1,8 +1,23 @@
 {
   "name": "agentkit-mesh",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Agent-to-agent discovery and delegation via MCP (Model Context Protocol)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openclaw/agentkit-mesh"
+  },
   "scripts": {
     "test": "vitest run",
     "build": "tsc"

@@ -6,6 +6,10 @@ export interface DiscoveryResult {
   matchedTerms: string[];
 }
 
+export interface DiscoveryProvider {
+  discover(query: string, limit?: number): Promise<DiscoveryResult[]>;
+}
+
 export class DiscoveryEngine {
   discover(query: string, registry: AgentRegistry, limit?: number): DiscoveryResult[] {
     const tokens = this.tokenize(query);
