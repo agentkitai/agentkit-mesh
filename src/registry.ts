@@ -9,10 +9,23 @@ export interface AgentAuth {
   headerName?: string;
 }
 
+export type ResourceType = 'filesystem' | 'git' | 'api' | 'database' | 'service';
+
+export interface AgentResource {
+  type: ResourceType;
+  /** Filesystem path (glob supported), git repo, API base URL, DB connection name, etc. */
+  uri: string;
+  /** Human description (optional) */
+  description?: string;
+  /** Access level */
+  access?: 'read' | 'write' | 'admin';
+}
+
 export interface AgentRecord {
   name: string;
   description: string;
   capabilities: string[];
+  resources: AgentResource[];
   endpoint: string;
   protocol: string;
   auth?: AgentAuth;
@@ -24,6 +37,7 @@ export interface RegisterInput {
   name: string;
   description: string;
   capabilities: string[];
+  resources?: AgentResource[];
   endpoint: string;
   protocol?: string;
   auth?: AgentAuth;
@@ -64,6 +78,7 @@ export class AgentRegistry {
         name TEXT PRIMARY KEY,
         description TEXT NOT NULL,
         capabilities TEXT NOT NULL,
+        resources TEXT NOT NULL DEFAULT '[]',
         endpoint TEXT NOT NULL,
         protocol TEXT NOT NULL DEFAULT 'http',
         auth TEXT,
@@ -85,8 +100,9 @@ export class AgentRegistry {
         updated_at TEXT NOT NULL
       )
     `);
-    // Add columns if upgrading from old schema
+    // Schema upgrades
     try { this.db.exec('ALTER TABLE agents ADD COLUMN auth TEXT'); } catch {}
+    try { this.db.exec('ALTER TABLE agents ADD COLUMN resources TEXT NOT NULL DEFAULT \'[]\''); } catch {}
     try { this.db.exec('ALTER TABLE delegations ADD COLUMN updated_at TEXT NOT NULL DEFAULT ""'); } catch {}
   }
 
@@ -99,20 +115,22 @@ export class AgentRegistry {
     }
     const now = new Date().toISOString();
     const capabilities = JSON.stringify(agent.capabilities);
+    const resources = JSON.stringify(agent.resources ?? []);
     const protocol = agent.protocol ?? 'http';
     const auth = agent.auth ? JSON.stringify(agent.auth) : null;
 
     this.db.prepare(`
-      INSERT INTO agents (name, description, capabilities, endpoint, protocol, auth, registered_at, last_seen)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (name, description, capabilities, resources, endpoint, protocol, auth, registered_at, last_seen)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         description = excluded.description,
         capabilities = excluded.capabilities,
+        resources = excluded.resources,
         endpoint = excluded.endpoint,
         protocol = excluded.protocol,
         auth = excluded.auth,
         last_seen = excluded.last_seen
-    `).run(agent.name, agent.description, capabilities, agent.endpoint, protocol, auth, now, now);
+    `).run(agent.name, agent.description, capabilities, resources, agent.endpoint, protocol, auth, now, now);
 
     return this.get(agent.name)!;
   }
@@ -176,6 +194,7 @@ export class AgentRegistry {
     const record: AgentRecord = {
       ...row,
       capabilities: JSON.parse(row.capabilities),
+      resources: JSON.parse(row.resources ?? '[]'),
     };
     if (row.auth) {
       record.auth = JSON.parse(row.auth);

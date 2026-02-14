@@ -69,11 +69,21 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
 
   // ── Discovery ──
 
+  // GET /v1/discover?query=...&resources=[{"type":"filesystem","uri":"/path"}]
   app.get('/v1/discover', (c) => {
     const query = c.req.query('query') ?? '';
     const limit = safeInt(c.req.query('limit'), 0) || undefined;
     if (!query) return c.json({ error: 'query parameter required' }, 400);
-    const results = discovery.discover(query, registry, limit);
+
+    let requiredResources;
+    const resourcesParam = c.req.query('resources');
+    if (resourcesParam) {
+      try { requiredResources = JSON.parse(resourcesParam); } catch {
+        return c.json({ error: 'Invalid resources JSON' }, 400);
+      }
+    }
+
+    const results = discovery.discover(query, registry, limit, requiredResources);
     // Strip auth from discovery results
     return c.json(results.map(r => ({
       ...r,
@@ -97,14 +107,38 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
     // Either target by name or let mesh auto-discover
     let targetName = body.targetName;
     let agent;
+    const requiredResources = body.resources;
 
     if (targetName) {
       agent = registry.get(targetName);
       if (!agent) return c.json({ error: `Agent "${targetName}" not found` }, 404);
+
+      // If resources specified, verify the target agent has access
+      if (requiredResources?.length) {
+        const check = discovery.discover(
+          agent.capabilities.join(' '),
+          registry,
+          undefined,
+          requiredResources,
+        );
+        const hasAccess = check.some(r => r.agent.name === targetName);
+        if (!hasAccess) {
+          return c.json({
+            error: `Agent "${targetName}" does not have access to required resources`,
+            requiredResources,
+            agentResources: agent.resources,
+          }, 403);
+        }
+      }
     } else if (body.query) {
-      // Auto-discover best agent for the task
-      const results = discovery.discover(body.query, registry, 1);
-      if (results.length === 0) return c.json({ error: 'No agent found matching query' }, 404);
+      // Auto-discover best agent — with resource filtering
+      const results = discovery.discover(body.query, registry, 1, requiredResources);
+      if (results.length === 0) {
+        const reason = requiredResources?.length
+          ? 'No agent found with matching capabilities AND access to required resources'
+          : 'No agent found matching query';
+        return c.json({ error: reason, requiredResources }, 404);
+      }
       agent = results[0].agent;
       targetName = agent.name;
     } else {

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 export { AgentRegistry } from './registry.js';
-export type { AgentRecord, RegisterInput } from './registry.js';
+export type { AgentRecord, RegisterInput, AgentResource, ResourceType } from './registry.js';
 export { DiscoveryEngine } from './discovery.js';
-export type { DiscoveryResult, DiscoveryProvider } from './discovery.js';
+export type { DiscoveryResult, DiscoveryProvider, ResourceRequirement } from './discovery.js';
 export { DelegationClient } from './delegation.js';
 export type { DelegationResult, DelegationRequest, AgentAuth as DelegationAuth } from './delegation.js';
 export { createServer } from './server.js';
