@@ -22,7 +22,7 @@ describe('AgentRegistry', () => {
 
     expect(agent.name).toBe('test-agent');
     expect(agent.capabilities).toEqual(['search', 'summarize']);
-    expect(agent.protocol).toBe('mcp');
+    expect(agent.protocol).toBe('http');
 
     const retrieved = registry.get('test-agent');
     expect(retrieved).toEqual(agent);

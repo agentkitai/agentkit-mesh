@@ -3,12 +3,19 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
+export interface AgentAuth {
+  type: 'bearer' | 'header' | 'none';
+  token?: string;
+  headerName?: string;
+}
+
 export interface AgentRecord {
   name: string;
   description: string;
   capabilities: string[];
   endpoint: string;
   protocol: string;
+  auth?: AgentAuth;
   registered_at: string;
   last_seen: string;
 }
@@ -19,30 +26,34 @@ export interface RegisterInput {
   capabilities: string[];
   endpoint: string;
   protocol?: string;
+  auth?: AgentAuth;
 }
+
+export type DelegationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'accepted';
 
 export interface DelegationRecord {
   id: string;
   source_agent: string;
   target_agent: string;
   task: string;
-  status: string;
+  status: DelegationStatus;
   result: string | null;
   error: string | null;
   latency_ms: number | null;
   created_at: string;
+  updated_at: string;
 }
 
 export class AgentRegistry {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
-    if (!dbPath) {
+    if (!dbPath && dbPath !== ':memory:') {
       const dir = path.join(os.homedir(), '.agentkit-mesh');
       fs.mkdirSync(dir, { recursive: true });
       dbPath = path.join(dir, 'registry.db');
     }
-    this.db = new Database(dbPath);
+    this.db = new Database(dbPath!);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
   }
@@ -54,7 +65,8 @@ export class AgentRegistry {
         description TEXT NOT NULL,
         capabilities TEXT NOT NULL,
         endpoint TEXT NOT NULL,
-        protocol TEXT NOT NULL DEFAULT 'mcp',
+        protocol TEXT NOT NULL DEFAULT 'http',
+        auth TEXT,
         registered_at TEXT NOT NULL,
         last_seen TEXT NOT NULL
       )
@@ -69,9 +81,13 @@ export class AgentRegistry {
         result TEXT,
         error TEXT,
         latency_ms INTEGER,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       )
     `);
+    // Add columns if upgrading from old schema
+    try { this.db.exec('ALTER TABLE agents ADD COLUMN auth TEXT'); } catch {}
+    try { this.db.exec('ALTER TABLE delegations ADD COLUMN updated_at TEXT NOT NULL DEFAULT ""'); } catch {}
   }
 
   register(agent: RegisterInput): AgentRecord {
@@ -83,18 +99,20 @@ export class AgentRegistry {
     }
     const now = new Date().toISOString();
     const capabilities = JSON.stringify(agent.capabilities);
-    const protocol = agent.protocol ?? 'mcp';
+    const protocol = agent.protocol ?? 'http';
+    const auth = agent.auth ? JSON.stringify(agent.auth) : null;
 
     this.db.prepare(`
-      INSERT INTO agents (name, description, capabilities, endpoint, protocol, registered_at, last_seen)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (name, description, capabilities, endpoint, protocol, auth, registered_at, last_seen)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         description = excluded.description,
         capabilities = excluded.capabilities,
         endpoint = excluded.endpoint,
         protocol = excluded.protocol,
+        auth = excluded.auth,
         last_seen = excluded.last_seen
-    `).run(agent.name, agent.description, capabilities, agent.endpoint, protocol, now, now);
+    `).run(agent.name, agent.description, capabilities, agent.endpoint, protocol, auth, now, now);
 
     return this.get(agent.name)!;
   }
@@ -121,14 +139,24 @@ export class AgentRegistry {
     return result.changes > 0;
   }
 
-  logDelegation(record: Omit<DelegationRecord, 'created_at'> & { created_at?: string }): DelegationRecord {
-    const created_at = record.created_at ?? new Date().toISOString();
+  logDelegation(record: Omit<DelegationRecord, 'created_at' | 'updated_at'>): DelegationRecord {
+    const now = new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO delegations (id, source_agent, target_agent, task, status, result, error, latency_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO delegations (id, source_agent, target_agent, task, status, result, error, latency_ms, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(record.id, record.source_agent, record.target_agent, record.task, record.status,
-           record.result ?? null, record.error ?? null, record.latency_ms ?? null, created_at);
-    return { ...record, created_at } as DelegationRecord;
+           record.result ?? null, record.error ?? null, record.latency_ms ?? null, now, now);
+    return { ...record, created_at: now, updated_at: now };
+  }
+
+  updateDelegation(id: string, update: { status: DelegationStatus; result?: string; error?: string; latency_ms?: number }): boolean {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE delegations SET status = ?, result = COALESCE(?, result), error = COALESCE(?, error),
+        latency_ms = COALESCE(?, latency_ms), updated_at = ?
+      WHERE id = ?
+    `).run(update.status, update.result ?? null, update.error ?? null, update.latency_ms ?? null, now, id);
+    return result.changes > 0;
   }
 
   listDelegations(limit = 50, offset = 0): DelegationRecord[] {
@@ -145,9 +173,13 @@ export class AgentRegistry {
   }
 
   private rowToRecord(row: any): AgentRecord {
-    return {
+    const record: AgentRecord = {
       ...row,
       capabilities: JSON.parse(row.capabilities),
     };
+    if (row.auth) {
+      record.auth = JSON.parse(row.auth);
+    }
+    return record;
   }
 }

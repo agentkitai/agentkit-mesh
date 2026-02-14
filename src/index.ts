@@ -4,7 +4,7 @@ export type { AgentRecord, RegisterInput } from './registry.js';
 export { DiscoveryEngine } from './discovery.js';
 export type { DiscoveryResult, DiscoveryProvider } from './discovery.js';
 export { DelegationClient } from './delegation.js';
-export type { DelegationResult } from './delegation.js';
+export type { DelegationResult, DelegationRequest, AgentAuth as DelegationAuth } from './delegation.js';
 export { createServer } from './server.js';
 export { createHttpServer } from './http-server.js';
 export type { DelegationRecord } from './registry.js';

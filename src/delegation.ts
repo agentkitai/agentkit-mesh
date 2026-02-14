@@ -1,132 +1,117 @@
 /**
- * Delegation Client — routes tasks to agents via OpenClaw gateway API.
+ * Delegation Client — HTTP callback-based task delegation.
  *
- * Instead of MCP SSE (which never worked for openclaw:// endpoints),
- * this delegates via OpenClaw's sessions API — the same mechanism
- * agents use to talk to each other.
+ * Delegates tasks to agents via their registered HTTP endpoint.
+ * Framework-agnostic: any agent that exposes a POST /task endpoint works.
  */
 
 export interface DelegationResult {
   success: boolean;
+  status: 'completed' | 'failed' | 'timeout' | 'accepted';
   result?: string;
   error?: string;
   latencyMs: number;
 }
 
-export interface DelegationConfig {
-  /** OpenClaw gateway URL (default: http://localhost:18789) */
-  gatewayUrl?: string;
-  /** OpenClaw gateway auth token */
-  gatewayToken?: string;
-  /** Timeout in ms (default: 120_000) */
-  timeout?: number;
+export interface AgentAuth {
+  type: 'bearer' | 'header' | 'none';
+  token?: string;
+  headerName?: string;
 }
 
-const MAX_DEPTH = 3;
+export interface DelegationRequest {
+  delegationId: string;
+  task: string;
+  context?: Record<string, unknown>;
+  callbackUrl?: string;
+}
+
+const MAX_DEPTH = 5;
 const DEFAULT_TIMEOUT = 120_000;
 
 export class DelegationClient {
-  private gatewayUrl: string;
-  private gatewayToken: string | undefined;
+  private meshBaseUrl: string;
   private timeout: number;
 
-  constructor(config?: DelegationConfig) {
-    this.gatewayUrl = (config?.gatewayUrl ?? process.env['OPENCLAW_GATEWAY_URL'] ?? 'http://localhost:18789').replace(/\/+$/, '');
-    this.gatewayToken = config?.gatewayToken ?? process.env['OPENCLAW_GATEWAY_TOKEN'];
-    this.timeout = config?.timeout ?? DEFAULT_TIMEOUT;
+  constructor(opts?: { meshBaseUrl?: string; timeout?: number }) {
+    this.meshBaseUrl = (opts?.meshBaseUrl ?? process.env['MESH_BASE_URL'] ?? 'http://localhost:8766').replace(/\/+$/, '');
+    this.timeout = opts?.timeout ?? DEFAULT_TIMEOUT;
   }
 
   /**
-   * Delegate a task to an agent via OpenClaw sessions.
-   *
-   * @param agentId - OpenClaw agent ID (e.g., "dev", "coach", "biz")
-   * @param task - Task description
-   * @param context - Optional context (includes depth tracking)
+   * Delegate a task to an agent via its HTTP callback endpoint.
    */
   async delegate(
-    agentId: string,
+    endpoint: string,
+    delegationId: string,
     task: string,
-    context?: Record<string, any>,
+    opts?: {
+      context?: Record<string, unknown>;
+      auth?: AgentAuth;
+      timeout?: number;
+      async?: boolean;
+    },
   ): Promise<DelegationResult> {
-    const depth = context?.depth ?? 0;
+    const depth = (opts?.context?.depth as number) ?? 0;
     if (depth > MAX_DEPTH) {
-      return { success: false, error: `Delegation depth ${depth} exceeds max ${MAX_DEPTH}`, latencyMs: 0 };
+      return { success: false, status: 'failed', error: `Delegation depth ${depth} exceeds max ${MAX_DEPTH}`, latencyMs: 0 };
     }
 
     const start = Date.now();
+    const timeout = opts?.timeout ?? this.timeout;
+
+    const body: DelegationRequest = {
+      delegationId,
+      task,
+      context: { ...opts?.context, depth: depth + 1 },
+    };
+
+    // If async, include callback URL so agent can POST result back
+    if (opts?.async) {
+      body.callbackUrl = `${this.meshBaseUrl}/v1/delegations/${delegationId}/result`;
+    }
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+    if (opts?.auth?.type === 'bearer' && opts.auth.token) {
+      headers['Authorization'] = `Bearer ${opts.auth.token}`;
+    } else if (opts?.auth?.type === 'header' && opts.auth.headerName && opts.auth.token) {
+      headers[opts.auth.headerName] = opts.auth.token;
+    }
 
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.gatewayToken) {
-        headers['Authorization'] = `Bearer ${this.gatewayToken}`;
-      }
-
-      // Use OpenClaw's spawn endpoint to run task in isolated session
-      const response = await fetch(`${this.gatewayUrl}/api/sessions/spawn`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          agentId,
-          task,
-          runTimeoutSeconds: Math.floor(this.timeout / 1000),
-        }),
-        signal: AbortSignal.timeout(this.timeout),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
       });
 
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        return {
-          success: false,
-          error: `Gateway returned ${response.status}: ${body}`,
-          latencyMs: Date.now() - start,
-        };
+      const latencyMs = Date.now() - start;
+
+      // 202 = async accepted, agent will POST result to callbackUrl
+      if (response.status === 202) {
+        return { success: true, status: 'accepted', result: 'Task accepted, awaiting async result', latencyMs };
       }
 
-      const data = await response.json();
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        return { success: false, status: 'failed', error: `Agent returned ${response.status}: ${text}`, latencyMs };
+      }
+
+      const data = await response.json().catch(() => null);
       return {
         success: true,
-        result: data.result ?? data.message ?? JSON.stringify(data),
-        latencyMs: Date.now() - start,
+        status: 'completed',
+        result: data?.result ?? JSON.stringify(data),
+        latencyMs,
       };
     } catch (err: any) {
-      return {
-        success: false,
-        error: err.message ?? String(err),
-        latencyMs: Date.now() - start,
-      };
-    }
-  }
-
-  /**
-   * Send a message to an existing agent session (fire-and-forget).
-   */
-  async send(
-    agentId: string,
-    message: string,
-  ): Promise<DelegationResult> {
-    const start = Date.now();
-
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.gatewayToken) {
-        headers['Authorization'] = `Bearer ${this.gatewayToken}`;
+      const latencyMs = Date.now() - start;
+      if (err.name === 'TimeoutError' || err.message?.includes('timed out')) {
+        return { success: false, status: 'timeout', error: `Timed out after ${timeout}ms`, latencyMs };
       }
-
-      const response = await fetch(`${this.gatewayUrl}/api/sessions/send`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ agentId, message }),
-        signal: AbortSignal.timeout(30_000),
-      });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        return { success: false, error: `Gateway returned ${response.status}: ${body}`, latencyMs: Date.now() - start };
-      }
-
-      return { success: true, result: 'Message sent', latencyMs: Date.now() - start };
-    } catch (err: any) {
-      return { success: false, error: err.message ?? String(err), latencyMs: Date.now() - start };
+      return { success: false, status: 'failed', error: err.message ?? String(err), latencyMs };
     }
   }
 }

@@ -1,57 +1,123 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { DelegationClient } from '../src/delegation.js';
 import { AgentRegistry } from '../src/registry.js';
 import { createServer } from '../src/server.js';
+import { createServer as createHttpServer } from 'http';
+
+// Simple mock agent HTTP server
+function createMockAgent(handler?: (body: any) => any) {
+  const server = createHttpServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      const parsed = JSON.parse(body);
+      const response = handler ? handler(parsed) : { status: 'completed', result: `Handled: ${parsed.task}` };
+      res.writeHead(response._statusCode ?? 200, { 'Content-Type': 'application/json' });
+      delete response._statusCode;
+      res.end(JSON.stringify(response));
+    });
+  });
+  return server;
+}
 
 describe('DelegationClient', () => {
+  let mockAgent: ReturnType<typeof createMockAgent>;
+  let mockPort: number;
+
+  beforeAll(async () => {
+    mockAgent = createMockAgent();
+    await new Promise<void>((resolve) => {
+      mockAgent.listen(0, () => {
+        mockPort = (mockAgent.address() as any).port;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(() => { mockAgent.close(); });
+
+  it('delegates a task and returns result', async () => {
+    const dc = new DelegationClient();
+    const result = await dc.delegate(`http://localhost:${mockPort}/task`, 'test-id', 'summarize this');
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.result).toContain('Handled: summarize this');
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
   it('rejects delegation when depth exceeds max', async () => {
-    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1' });
-    const result = await dc.delegate('dev', 'task', { depth: 4 });
+    const dc = new DelegationClient();
+    const result = await dc.delegate(`http://localhost:${mockPort}/task`, 'test-id', 'task', { context: { depth: 6 } });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/depth/i);
   });
 
-  it('returns error when gateway is unreachable', async () => {
-    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1', timeout: 2000 });
-    const result = await dc.delegate('dev', 'test task');
+  it('returns error when agent is unreachable', async () => {
+    const dc = new DelegationClient({ timeout: 2000 });
+    const result = await dc.delegate('http://localhost:1/task', 'test-id', 'test');
     expect(result.success).toBe(false);
-    expect(result.error).toBeDefined();
-    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.status).toBe('failed');
   });
 
-  it('tracks latency even on failure', async () => {
-    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1', timeout: 2000 });
-    const result = await dc.delegate('dev', 'test');
-    expect(typeof result.latencyMs).toBe('number');
-  });
-
-  it('send returns error when gateway is unreachable', async () => {
-    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1' });
-    const result = await dc.send('dev', 'hello');
-    expect(result.success).toBe(false);
-    expect(result.error).toBeDefined();
-  });
-
-  it('reads config from env vars', () => {
-    const origUrl = process.env['OPENCLAW_GATEWAY_URL'];
-    const origToken = process.env['OPENCLAW_GATEWAY_TOKEN'];
-    process.env['OPENCLAW_GATEWAY_URL'] = 'http://test:9999';
-    process.env['OPENCLAW_GATEWAY_TOKEN'] = 'test-token';
+  it('handles 202 async acceptance', async () => {
+    const asyncAgent = createMockAgent(() => ({ _statusCode: 202, status: 'accepted' }));
+    await new Promise<void>((resolve) => {
+      asyncAgent.listen(0, () => resolve());
+    });
+    const asyncPort = (asyncAgent.address() as any).port;
 
     const dc = new DelegationClient();
-    // Can't inspect private fields, but we can verify it doesn't throw
-    expect(dc).toBeDefined();
+    const result = await dc.delegate(`http://localhost:${asyncPort}/task`, 'test-id', 'long task', { async: true });
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('accepted');
 
-    if (origUrl) process.env['OPENCLAW_GATEWAY_URL'] = origUrl;
-    else delete process.env['OPENCLAW_GATEWAY_URL'];
-    if (origToken) process.env['OPENCLAW_GATEWAY_TOKEN'] = origToken;
-    else delete process.env['OPENCLAW_GATEWAY_TOKEN'];
+    asyncAgent.close();
+  });
+
+  it('handles agent error response', async () => {
+    const errorAgent = createMockAgent(() => ({ _statusCode: 500, error: 'internal error' }));
+    await new Promise<void>((resolve) => {
+      errorAgent.listen(0, () => resolve());
+    });
+    const errorPort = (errorAgent.address() as any).port;
+
+    const dc = new DelegationClient();
+    const result = await dc.delegate(`http://localhost:${errorPort}/task`, 'test-id', 'fail');
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('500');
+
+    errorAgent.close();
+  });
+
+  it('sends auth header when configured', async () => {
+    let receivedHeaders: any;
+    const authAgent = createMockAgent((body) => {
+      receivedHeaders = body;
+      return { status: 'completed', result: 'ok' };
+    });
+    // Capture headers via a custom server
+    const authServer = createHttpServer((req, res) => {
+      receivedHeaders = req.headers;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'completed', result: 'authed' }));
+    });
+    await new Promise<void>((resolve) => { authServer.listen(0, () => resolve()); });
+    const authPort = (authServer.address() as any).port;
+
+    const dc = new DelegationClient();
+    await dc.delegate(`http://localhost:${authPort}/task`, 'test-id', 'test', {
+      auth: { type: 'bearer', token: 'secret-123' },
+    });
+    expect(receivedHeaders?.authorization).toBe('Bearer secret-123');
+
+    authServer.close();
   });
 });
 
-describe('mesh_delegate tool', () => {
+describe('mesh_delegate tool (MCP)', () => {
   let registry: AgentRegistry;
   let client: Client;
 
@@ -64,9 +130,7 @@ describe('mesh_delegate tool', () => {
     await client.connect(clientTransport);
   });
 
-  afterEach(() => {
-    registry.close();
-  });
+  afterEach(() => { registry.close(); });
 
   it('mesh_delegate tool is listed', async () => {
     const { tools } = await client.listTools();
@@ -82,22 +146,17 @@ describe('mesh_delegate tool', () => {
     expect(text).toMatch(/not found/i);
   });
 
-  it('attempts delegation to registered agent', async () => {
-    registry.register({
-      name: 'helper',
-      description: 'Helps',
-      capabilities: ['help'],
-      endpoint: 'openclaw://agent/helper',
-    });
+  it('logs delegation attempt', async () => {
+    registry.register({ name: 'helper', description: 'Helps', capabilities: ['help'], endpoint: 'http://localhost:1/task' });
 
-    const result = await client.callTool({
+    await client.callTool({
       name: 'mesh_delegate',
       arguments: { targetName: 'helper', task: 'help me' },
     });
-    const text = (result.content as any)[0].text;
-    const parsed = JSON.parse(text);
-    // Agent found but gateway unreachable in test
-    expect(parsed.success).toBe(false);
-    expect(parsed.error).toBeDefined();
+
+    const delegations = registry.listDelegations();
+    expect(delegations.length).toBe(1);
+    expect(delegations[0].target_agent).toBe('helper');
+    expect(delegations[0].task).toBe('help me');
   });
 });
