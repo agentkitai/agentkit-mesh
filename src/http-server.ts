@@ -45,6 +45,7 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
       return c.json({ error: 'name and endpoint are required' }, 400);
     }
     const agent = registry.register({ name, description: description ?? '', capabilities: capabilities ?? [], resources: resources ?? [], endpoint, protocol, auth });
+    console.log(`[AGENT] Registered: ${name} → ${endpoint} (capabilities: ${(capabilities ?? []).join(', ')})`);
     return c.json(agent, 201);
   });
 
@@ -84,6 +85,7 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
     }
 
     const results = discovery.discover(query, registry, limit, requiredResources);
+    console.log(`[DISCOVER] query="${query}" → ${results.length} result(s)${results.length ? ': ' + results.map(r => `${r.agent.name}(${r.score.toFixed(2)})`).join(', ') : ''}`);
     // Strip auth from discovery results
     return c.json(results.map(r => ({
       ...r,
@@ -161,15 +163,19 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
       latency_ms: null,
     });
 
+    console.log(`[DELEGATION] ${id.slice(0,8)} | ${sourceAgent} → ${targetName} | task: "${task.slice(0,80)}" | endpoint: ${agent.endpoint}${isAsync ? ' (async)' : ''}`);
+
     // Update to running
     registry.updateDelegation(id, { status: 'running' });
 
     // Delegate via HTTP callback
+    const startMs = Date.now();
     const result = await delegationClient.delegate(agent.endpoint, id, task, {
       context: context ?? {},
       auth: agent.auth,
       async: isAsync,
     });
+    const elapsed = Date.now() - startMs;
 
     // Update delegation record
     registry.updateDelegation(id, {
@@ -178,6 +184,8 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
       error: result.error ?? undefined,
       latency_ms: result.latencyMs,
     });
+
+    console.log(`[DELEGATION] ${id.slice(0,8)} | ${sourceAgent} → ${targetName} | ${result.status.toUpperCase()} (${elapsed}ms)${result.error ? ` | error: ${result.error}` : ''}`);
 
     return c.json({ id, targetAgent: targetName, ...result });
   });
@@ -203,6 +211,8 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
       result: body.result ?? undefined,
       error: body.error ?? undefined,
     });
+
+    console.log(`[DELEGATION] ${id.slice(0,8)} | async callback → ${status.toUpperCase()}${body.error ? ` | error: ${body.error}` : ''}`);
 
     return c.json({ ok: true });
   });
