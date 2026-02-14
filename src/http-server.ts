@@ -81,7 +81,7 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
     return c.json(results);
   });
 
-  // Delegate
+  // Delegate — routes task to agent via OpenClaw gateway
   app.post('/v1/delegate', async (c) => {
     let body: any;
     try { body = await c.req.json(); } catch {
@@ -94,12 +94,15 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
     const agent = registry.get(targetName);
     if (!agent) return c.json({ error: `Agent "${targetName}" not found` }, 404);
 
+    // Extract agentId from endpoint (openclaw://agent/dev → dev)
+    const agentId = agent.endpoint.replace(/^openclaw:\/\/agent\//, '');
+
     const id = crypto.randomUUID();
-    const result = await delegationClient.delegate(agent.endpoint, task, context ?? {});
+    const result = await delegationClient.delegate(agentId, task, context ?? {});
 
     registry.logDelegation({
       id,
-      source_agent: 'http-api',
+      source_agent: body.sourceAgent ?? 'http-api',
       target_agent: targetName,
       task,
       status: result.success ? 'completed' : 'failed',

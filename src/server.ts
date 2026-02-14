@@ -58,24 +58,18 @@ export function createServer(registry: AgentRegistry): McpServer {
 
   server.tool(
     'mesh_delegate',
-    'Delegate a task to another agent by name',
+    'Delegate a task to another agent via OpenClaw. Discovers the agent in the registry and routes via the gateway.',
     {
-      targetName: z.string().describe('Name of the target agent'),
+      targetName: z.string().describe('Name of the target agent (e.g., dev, coach, biz)'),
       task: z.string().describe('Task to delegate'),
-      context: z.string().optional().describe('Optional JSON context'),
     },
-    async ({ targetName, task, context }) => {
+    async ({ targetName, task }) => {
       const agent = registry.get(targetName);
       if (!agent) {
-        return { content: [{ type: 'text' as const, text: `Agent "${targetName}" not found` }] };
+        return { content: [{ type: 'text' as const, text: `Agent "${targetName}" not found in registry` }] };
       }
-      let ctx: Record<string, any> = {};
-      if (context) {
-        try { ctx = JSON.parse(context); } catch {
-          return { content: [{ type: 'text' as const, text: `Invalid JSON in context` }] };
-        }
-      }
-      const result = await delegationClient.delegate(agent.endpoint, task, ctx);
+      const agentId = agent.endpoint.replace(/^openclaw:\/\/agent\//, '');
+      const result = await delegationClient.delegate(agentId, task);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     }
   );

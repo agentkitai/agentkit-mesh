@@ -6,8 +6,6 @@ export type { DiscoveryResult, DiscoveryProvider } from './discovery.js';
 export { DelegationClient } from './delegation.js';
 export type { DelegationResult } from './delegation.js';
 export { createServer } from './server.js';
-export { LoreDiscoveryEngine } from './lore-discovery.js';
-
 export { createHttpServer } from './http-server.js';
 export type { DelegationRecord } from './registry.js';
 

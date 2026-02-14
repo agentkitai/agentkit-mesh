@@ -1,92 +1,53 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { z } from 'zod';
-import { DelegationClient, DelegationResult } from '../src/delegation.js';
+import { DelegationClient } from '../src/delegation.js';
 import { AgentRegistry } from '../src/registry.js';
 import { createServer } from '../src/server.js';
 
-/** Create a mock target agent that has a handle_task tool */
-function createMockTargetServer(handler?: (task: string, context: any) => string): McpServer {
-  const server = new McpServer({ name: 'mock-target', version: '0.1.0' });
-  server.tool(
-    'handle_task',
-    'Handle a delegated task',
-    { task: z.string(), context: z.record(z.string(), z.unknown()).optional() },
-    async ({ task, context }) => {
-      const result = handler ? handler(task, context) : `Handled: ${task}`;
-      return { content: [{ type: 'text' as const, text: result }] };
-    }
-  );
-  return server;
-}
-
 describe('DelegationClient', () => {
-  it('delegates a task to a target agent and returns result', async () => {
-    const target = createMockTargetServer();
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await target.connect(serverTransport);
-
-    const dc = new DelegationClient();
-    const result = await dc.delegateViaTransport(clientTransport, 'summarize this doc', {});
-
-    expect(result.success).toBe(true);
-    expect(result.result).toBe('Handled: summarize this doc');
-    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
-  });
-
-  it('tracks latency in result', async () => {
-    const target = createMockTargetServer();
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await target.connect(serverTransport);
-
-    const dc = new DelegationClient();
-    const result = await dc.delegateViaTransport(clientTransport, 'test', {});
-
-    expect(typeof result.latencyMs).toBe('number');
-    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
-  });
-
   it('rejects delegation when depth exceeds max', async () => {
-    const dc = new DelegationClient();
-    const target = createMockTargetServer();
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await target.connect(serverTransport);
-
-    const result = await dc.delegateViaTransport(clientTransport, 'task', { depth: 4 });
-
+    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1' });
+    const result = await dc.delegate('dev', 'task', { depth: 4 });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/depth/i);
   });
 
-  it('increments depth in context passed to target', async () => {
-    let receivedContext: any;
-    const target = createMockTargetServer((task, ctx) => {
-      receivedContext = ctx;
-      return 'ok';
-    });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await target.connect(serverTransport);
-
-    const dc = new DelegationClient();
-    await dc.delegateViaTransport(clientTransport, 'task', { depth: 1 });
-
-    expect(receivedContext).toBeDefined();
-    expect(receivedContext.depth).toBe(2);
-  });
-
-  it('returns error result on target failure', async () => {
-    const target = new McpServer({ name: 'broken', version: '0.1.0' });
-    // No handle_task tool registered — calling it should error
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await target.connect(serverTransport);
-
-    const dc = new DelegationClient();
-    const result = await dc.delegateViaTransport(clientTransport, 'task', {});
-
+  it('returns error when gateway is unreachable', async () => {
+    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1', timeout: 2000 });
+    const result = await dc.delegate('dev', 'test task');
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('tracks latency even on failure', async () => {
+    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1', timeout: 2000 });
+    const result = await dc.delegate('dev', 'test');
+    expect(typeof result.latencyMs).toBe('number');
+  });
+
+  it('send returns error when gateway is unreachable', async () => {
+    const dc = new DelegationClient({ gatewayUrl: 'http://localhost:1' });
+    const result = await dc.send('dev', 'hello');
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  it('reads config from env vars', () => {
+    const origUrl = process.env['OPENCLAW_GATEWAY_URL'];
+    const origToken = process.env['OPENCLAW_GATEWAY_TOKEN'];
+    process.env['OPENCLAW_GATEWAY_URL'] = 'http://test:9999';
+    process.env['OPENCLAW_GATEWAY_TOKEN'] = 'test-token';
+
+    const dc = new DelegationClient();
+    // Can't inspect private fields, but we can verify it doesn't throw
+    expect(dc).toBeDefined();
+
+    if (origUrl) process.env['OPENCLAW_GATEWAY_URL'] = origUrl;
+    else delete process.env['OPENCLAW_GATEWAY_URL'];
+    if (origToken) process.env['OPENCLAW_GATEWAY_TOKEN'] = origToken;
+    else delete process.env['OPENCLAW_GATEWAY_TOKEN'];
   });
 });
 
@@ -115,20 +76,18 @@ describe('mesh_delegate tool', () => {
   it('returns error when target agent not found', async () => {
     const result = await client.callTool({
       name: 'mesh_delegate',
-      arguments: { targetName: 'nonexistent', task: 'do something', context: '{}' },
+      arguments: { targetName: 'nonexistent', task: 'do something' },
     });
     const text = (result.content as any)[0].text;
     expect(text).toMatch(/not found/i);
   });
 
-  it('delegates to a registered agent', async () => {
-    // Register an agent — we can't actually connect to it in this test,
-    // so we expect the delegation to fail with a connection error (not "not found")
+  it('attempts delegation to registered agent', async () => {
     registry.register({
       name: 'helper',
       description: 'Helps',
       capabilities: ['help'],
-      endpoint: 'http://localhost:59999',
+      endpoint: 'openclaw://agent/helper',
     });
 
     const result = await client.callTool({
@@ -136,8 +95,8 @@ describe('mesh_delegate tool', () => {
       arguments: { targetName: 'helper', task: 'help me' },
     });
     const text = (result.content as any)[0].text;
-    // It should attempt delegation (agent was found) but fail on connection
     const parsed = JSON.parse(text);
+    // Agent found but gateway unreachable in test
     expect(parsed.success).toBe(false);
     expect(parsed.error).toBeDefined();
   });

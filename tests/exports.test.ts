@@ -7,6 +7,6 @@ describe('Package exports', () => {
     expect(mod.DiscoveryEngine).toBeDefined();
     expect(mod.DelegationClient).toBeDefined();
     expect(mod.createServer).toBeDefined();
-    expect(mod.LoreDiscoveryEngine).toBeDefined();
+    expect(mod.createHttpServer).toBeDefined();
   });
 });
