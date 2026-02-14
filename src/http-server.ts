@@ -40,11 +40,11 @@ export function createHttpServer(registry: AgentRegistry, port = 8766) {
     try { body = await c.req.json(); } catch {
       return c.json({ error: 'Invalid JSON body' }, 400);
     }
-    const { name, description, capabilities, endpoint, protocol, auth } = body;
+    const { name, description, capabilities, resources, endpoint, protocol, auth } = body;
     if (!name || !endpoint) {
       return c.json({ error: 'name and endpoint are required' }, 400);
     }
-    const agent = registry.register({ name, description: description ?? '', capabilities: capabilities ?? [], endpoint, protocol, auth });
+    const agent = registry.register({ name, description: description ?? '', capabilities: capabilities ?? [], resources: resources ?? [], endpoint, protocol, auth });
     return c.json(agent, 201);
   });
 
