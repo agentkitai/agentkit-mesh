@@ -9,11 +9,17 @@ export interface AgentAuth {
   headerName?: string;
 }
 
-export type ResourceType = 'filesystem' | 'git' | 'api' | 'database' | 'service';
-
 export interface AgentResource {
-  type: ResourceType;
-  /** Filesystem path (glob supported), git repo, API base URL, DB connection name, etc. */
+  /**
+   * Standard URI identifying the resource and its host.
+   *
+   * Examples:
+   *   file://vm1.company.com/home/amit/projects/*
+   *   git://github.com/agentkitai/agentlens
+   *   https://api.github.com
+   *   postgres://db-prod.internal:5432/main
+   *   service://k8s-prod/my-service
+   */
   uri: string;
   /** Human description (optional) */
   description?: string;
